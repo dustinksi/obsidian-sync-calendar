@@ -1,4 +1,4 @@
-import { App, type PluginManifest, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, type PluginManifest, Plugin, PluginSettingTab, Setting,ToggleComponent } from 'obsidian';
 
 import { SyncStatus, NetworkStatus } from 'Syncs/StatusEnumerate';
 import { gfSyncStatus$, gfNetStatus$ } from 'Syncs/StatusEnumerate';
@@ -12,7 +12,7 @@ import { setDebugLogging } from 'lib/DebugLog';
 interface SyncCalendarPluginSettings {
   fetchWeeksAgo: number;
   fetchMaximumEvents: number;
-
+  calendarsToFetchFrom: object
   renderDate: boolean;
   renderTags: boolean;
 
@@ -22,7 +22,7 @@ interface SyncCalendarPluginSettings {
 const DEFAULT_SETTINGS: SyncCalendarPluginSettings = {
   fetchWeeksAgo: 4,
   fetchMaximumEvents: 2000,
-
+  calendarsToFetchFrom: {"primary": true},
   renderDate: true,
   renderTags: true,
 
@@ -32,7 +32,7 @@ const DEFAULT_SETTINGS: SyncCalendarPluginSettings = {
 
 export default class SyncCalendarPlugin extends Plugin {
   public settings: SyncCalendarPluginSettings;
-
+  public settingsTab: SyncCalendarPluginSettingTab
   public syncStatusItem: HTMLElement;
 
   public netStatus: NetworkStatus;
@@ -49,8 +49,10 @@ export default class SyncCalendarPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
     setDebugLogging(this.settings.enableLogging);
-
-    this.addSettingTab(new SyncCalendarPluginSettingTab(this.app, this));
+    let settingsTab = new SyncCalendarPluginSettingTab(this.app, this)
+    this.settingsTab = settingsTab
+    window.onGoogleCalendar = settingsTab.createCalendersWidget //there's definitely a better way to do this, but i'm making a callback from the google calender sync.ts, so that when it fetches the calendar it updates the widget in settings
+    this.addSettingTab(settingsTab);
 
     // This adds a status bar item to the bottom of the app. Does not work on mobile apps.
     this.netStatusItem = this.addStatusBarItem();
@@ -59,7 +61,8 @@ export default class SyncCalendarPlugin extends Plugin {
     gfNetStatus$.subscribe(newNetStatus => this.updateNetStatusItem(newNetStatus));
     gfSyncStatus$.subscribe(newSyncStatus => this.updateSyncStatusItem(newSyncStatus));
 
-    this.mainSync = new MainSynchronizer(this.app);
+    this.mainSync = new MainSynchronizer(this.app, this);
+    
 
     this.queryInjector = new QueryInjector(this);
     this.queryInjector.setMainSync(this.mainSync);
@@ -149,17 +152,54 @@ export default class SyncCalendarPlugin extends Plugin {
 
 class SyncCalendarPluginSettingTab extends PluginSettingTab {
   plugin: SyncCalendarPlugin;
-
+  calendar: any
+  shouldPutCalendar: boolean;
   constructor(app: App, plugin: SyncCalendarPlugin) {
     super(app, plugin);
     this.plugin = plugin;
+    this.shouldPutCalendar = false
   }
-
-  display(): void {
+  createCalendersWidget = async (calenders: any) => {
+    this.createHeader("Selected Calendars");
     const { containerEl } = this;
+   
+    console.log(containerEl)
+    let actualCalendar = calenders.data.items.map(apiResponseCalendar => {
+      return apiResponseCalendar.id
+    })
+    if (this.plugin.settings.calendarsToFetchFrom["primary"] == true) { //i believe the first entry in calendarList.list() is the primary calander, which is
+      this.plugin.settings.calendarsToFetchFrom[actualCalendar[0]] = true
+      delete this.plugin.settings.calendarsToFetchFrom["primary"]
+      await this.plugin.saveSettings();
+    }
+    // console.log(actualCalendar)
+    for (const calendar of actualCalendar) {
 
+      let setting = new Setting(containerEl)
+        .setName(calendar)
+      setting.addToggle(toggle => {
+        
+        toggle.setValue(this.plugin.settings.calendarsToFetchFrom[calendar])
+          .onChange(async (value) => {
+            this.plugin.settings.calendarsToFetchFrom[calendar] = value;
+            setDebugLogging(value);
+            await this.plugin.saveSettings();
+          })}
+      ).controlEl.querySelector("input");
+        
+    }
+    // this.shouldPutCalendar = false
+    // this.display()
+
+  }
+  display(): void {
+    
+    const { containerEl } = this;
     containerEl.empty();
-
+    if (this.shouldPutCalendar) {
+      console.log("displaying calendar!")
+      this.createCalendersWidget(this.calendar)
+    }
     this.createHeader("Fetch");
 
     new Setting(containerEl)
@@ -233,6 +273,8 @@ class SyncCalendarPluginSettingTab extends PluginSettingTab {
           })
       )
       .controlEl.querySelector("input");
+    
+    // this.referenceEl = containerEl.querySelector("setting-item")
   }
 
   private createHeader(header_title: string, header_desc: string | null = null) {

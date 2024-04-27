@@ -122,6 +122,7 @@
 				error_info = null;
 			})
 			.catch((err) => {
+				console.error(err)
 				error_info = err;
 			})
 			.finally(() => {

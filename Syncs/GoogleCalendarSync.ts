@@ -1,6 +1,6 @@
 import * as path from 'path';
 
-import type { App, Vault, Notice, FileSystemAdapter } from 'obsidian';
+import type { App, Vault, Notice, FileSystemAdapter, Plugin } from 'obsidian';
 import { authenticate } from '@google-cloud/local-auth';
 import { google } from 'googleapis';
 import type { OAuth2Client, GaxiosPromise, GaxiosResponse } from 'googleapis-common';
@@ -15,6 +15,7 @@ import {
   gfSyncStatus$,
   gfNetStatus$
 } from './StatusEnumerate';
+import type SyncCalendarPlugin from 'main';
 
 /**
  * This class handles syncing with Google Calendar.
@@ -25,18 +26,33 @@ export class GoogleCalendarSync {
   public SCOPES = ['https://www.googleapis.com/auth/calendar'];
   private TOKEN_PATH = ""
   private CREDENTIALS_PATH = ""
-
+  public plugin: Plugin
   private isTokenValid = true;
   private isTokenRefreshing = false;
 
-  constructor(app: App) {
+  constructor(app: App, plugin:Plugin) {
     this.vault = app.vault
-
+    this.plugin = plugin
     // Set the paths for the token and credentials files
     this.TOKEN_PATH = path.join(this.vault.configDir, 'calendar.sync.token.json');
     this.CREDENTIALS_PATH = path.join(this.vault.configDir, 'calendar.sync.credentials.json');
   }
+  async updateSettingsMenu() {
+    let auth = await this.authorize();
+    const calendar = google.calendar({ version: 'v3', auth });
 
+    // Set the sync and network status to DOWNLOAD
+    gfSyncStatus$.next(SyncStatus.DOWNLOAD);
+    // console.log()
+    
+    let castedPlugin = this.plugin as SyncCalendarPlugin
+    castedPlugin.settingsTab.shouldPutCalendar = true //see main.ts for def
+
+
+    castedPlugin.settingsTab.calendar = await calendar.calendarList.list()
+    castedPlugin.settingsTab.display()
+ 
+  }
   /**
    * Returns a list of completed and uncompleted events.
    * @param startMoment The start moment for the events to retrieve.
@@ -49,32 +65,47 @@ export class GoogleCalendarSync {
 
     // Set the sync and network status to DOWNLOAD
     gfSyncStatus$.next(SyncStatus.DOWNLOAD);
-
+    // console.log()
+    
+    let castedPlugin = this.plugin as SyncCalendarPlugin
+   
+    let calendars = castedPlugin.settings.calendarsToFetchFrom
     // Retrieve the events from Google Calendar
-    const eventsListQueryResult =
-      await calendar.events
-        .list({
-          calendarId: 'primary',
-          timeMin: startMoment.toISOString(),
-          maxResults: maxResults,
-          singleEvents: true,
-          orderBy: 'startTime',
-        })
-        .catch(err => {
-          if (err.message == 'invalid_grant') {
-            this.isTokenValid = false;
-          }
-          // Set the network status to CONNECTION_ERROR and the sync status to FAILED_WARNING
-          gfNetStatus$.next(NetworkStatus.CONNECTION_ERROR);
-          gfSyncStatus$.next(SyncStatus.FAILED_WARNING);
-          throw err;
-        });
+    let eventsListQueryResult = []
+    for (const key in calendars) {
+      if (!calendars[key]) { //calendar is not enabled
+        continue
+      }
 
+      let calendarID = key
+      console.log("getting data for " + calendarID)
+      const oneCalendar =
+        await calendar.events
+          .list({
+            calendarId: calendarID,
+            timeMin: startMoment.toISOString(),
+            maxResults: maxResults,
+            singleEvents: true,
+            orderBy: 'startTime',
+          })
+          .catch(err => {
+            if (err.message == 'invalid_grant') {
+              this.isTokenValid = false;
+            }
+            // Set the network status to CONNECTION_ERROR and the sync status to FAILED_WARNING
+            gfNetStatus$.next(NetworkStatus.CONNECTION_ERROR);
+            gfSyncStatus$.next(SyncStatus.FAILED_WARNING);
+            throw err;
+          });
+          // console.log("data: ", oneCalendar)
+          eventsListQueryResult = [...eventsListQueryResult, ...oneCalendar.data.items]
+    }
+    console.log(eventsListQueryResult)
     // Set the network status to HEALTH and the sync status to SUCCESS_WAITING
     gfNetStatus$.next(NetworkStatus.HEALTH);
     gfSyncStatus$.next(SyncStatus.SUCCESS_WAITING);
 
-    let eventsMetaList = eventsListQueryResult.data.items;
+    let eventsMetaList = eventsListQueryResult;
     let eventsList: Todo[] = [];
 
     if (eventsMetaList != undefined) {
@@ -100,6 +131,7 @@ export class GoogleCalendarSync {
     // Set the sync status to UPLOAD and attempt to insert the event
     gfSyncStatus$.next(SyncStatus.UPLOAD);
     while (retryTimes < 20 && !isInsertSuccess) {
+      console.log("attempting to send info about " + todo.content)
       ++retryTimes;
       await calendar.events
         .insert({

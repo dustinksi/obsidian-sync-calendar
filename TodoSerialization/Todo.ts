@@ -136,6 +136,8 @@ export class Todo {
 
     let isValidInterval = false;
     const regDateTime = /(\d{4}-\d{2}-\d{2}T\d+:\d+)/u;
+    console.log(todo.startDateTime)
+    console.log(todo.dueDateTime)
     if (todo.startDateTime?.match(regDateTime) && todo.dueDateTime?.match(regDateTime)) {
       isValidInterval = true;
     }

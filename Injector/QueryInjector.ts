@@ -70,7 +70,7 @@ export default class QueryInjector {
     }
     catch (err) {
       debug(`query error: ${err}`);
-
+      console.error(err)
       child = new InjectedQuery(pendingQuery.target, (root: HTMLElement) => {
         return new ErrorDisplay({
           target: root,
